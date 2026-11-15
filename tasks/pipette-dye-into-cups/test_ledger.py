@@ -75,8 +75,16 @@ def test_pressing_inside_a_vessel_above_its_liquid_still_dispenses_into_it():
 def test_a_short_vessel_gives_what_it_has():
     ledger = two_vessels()
     ledger.vessels["a"].contents = {"dye": 0.4}
-    run(ledger, [(AIR_A, DOWN), ((0.0, 0.0, 0.0005), DOWN), ((0.0, 0.0, 0.0005), UP)])
+    run(ledger, [(AIR_A, DOWN), ((0.0, 0.0, 0.0), DOWN), ((0.0, 0.0, 0.0), UP)])  # the tip on the floor takes it all
     assert ledger.tip_volume == pytest.approx(0.4) and ledger.vessels["a"].volume == pytest.approx(0.0)
+
+
+def test_a_bulb_draws_only_the_liquid_above_its_tip():
+    ledger = two_vessels()
+    ledger.vessels["a"].contents = {"dye": 0.4}
+    run(ledger, [(AIR_A, DOWN), ((0.0, 0.0, 0.0005), DOWN), ((0.0, 0.0, 0.0005), UP)])  # 0.5 mm stays behind
+    left = 0.0005 / ledger.vessels["a"].height_per_aliquot
+    assert ledger.tip_volume == pytest.approx(0.4 - left) and ledger.vessels["a"].volume == pytest.approx(left)
 
 
 def test_going_back_to_an_earlier_vessel_is_flagged():

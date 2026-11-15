@@ -29,7 +29,8 @@ RELEASE_AT = 0.3
 
 @dataclass
 class Vessel:
-    """A square-walled vessel: inner opening ``inner`` (m, x and y) centred on ``xy``, floor and rim heights."""
+    """A vessel centred on ``xy``: a round well of ``radius``, or square-walled with inner opening ``inner`` (m, x and
+    y); its floor and rim heights."""
 
     name: str
     xy: tuple[float, float]
@@ -39,6 +40,7 @@ class Vessel:
     height_per_aliquot: float  # m of liquid one aliquot adds
     contents: dict[str, float] = field(default_factory=dict)
     catch_above: float = 0.0  # liquid squeezed out this far above the rim, over the opening, still lands inside
+    radius: float = 0.0  # a round well of this radius (m), centred on ``xy``; 0: square, by ``inner``
 
     @property
     def volume(self) -> float:
@@ -53,6 +55,8 @@ class Vessel:
         return self.contents.get(component, 0.0) / v if v > 1e-9 else 0.0
 
     def contains_xy(self, p, margin: float = 0.0) -> bool:
+        if self.radius > 0:
+            return bool(np.hypot(p[0] - self.xy[0], p[1] - self.xy[1]) <= self.radius - margin)
         return bool(
             abs(p[0] - self.xy[0]) <= self.inner[0] / 2 - margin and abs(p[1] - self.xy[1]) <= self.inner[1] / 2 - margin
         )
@@ -103,7 +107,8 @@ class Ledger:
         self.events: list[Event] = []
         self.dips: list[str] = []  # vessels whose liquid the tip entered, in order
         self.spilled = 0.0
-        self.went_back = False
+        self.high = 0.0  # liquid squeezed into a vessel from more than catch_above over its rim
+        self.went_back = False  # the raw flag: the task's scorer applies its own going-back rule
 
     # -- queries ---------------------------------------------------------------------------------------------------
 
@@ -126,6 +131,11 @@ class Ledger:
         depth = min(max(press / self.travel, 0.0), 1.0) if self.travel > 0 else 0.0
         vessel = self.vessel_at(tip)
         catcher = next((v for v in self.vessels.values() if v.catches(tip)), None)
+        # Liquid squeezed out over a vessel's opening falls into it from any height; only a squeeze within catch_above
+        # of the rim is a clean one. A high squeeze is recorded, so a task can treat it as sloppy, not as lost liquid.
+        high = None
+        if catcher is None:
+            high = next((v for v in self.vessels.values() if v.contains_xy(tip) and tip[2] >= v.rim_z), None)
         wet = vessel if vessel is not None and vessel.submerged(tip) else None
 
         # Entering a vessel's liquid: record the dip, and whether it goes back to an earlier vessel in the protocol.
@@ -141,6 +151,9 @@ class Ledger:
         if not self.pressed and depth >= PRESS_AT:
             self.pressed = True
             if self.tip_volume > 1e-9:
+                if catcher is None and high is not None:
+                    self.high += self.tip_volume
+                    catcher = high
                 if catcher is not None:
                     _mix(catcher.contents, self.tip)
                     self.events.append(Event(self.step, "dispense", catcher.name, self.tip_volume))
@@ -156,7 +169,10 @@ class Ledger:
         elif self.pressed and depth <= RELEASE_AT:
             self.pressed = False
             if wet is not None:
-                take = min(self.aliquot, wet.volume)
+                # A bulb draws only while its tip is under the liquid: it takes what lies above the tip, up to a full
+                # aliquot, and then air, as a real transfer pipette does.
+                above_tip = max(wet.surface_z - tip[2], 0.0) / wet.height_per_aliquot if wet.height_per_aliquot > 0 else wet.volume
+                take = min(self.aliquot, wet.volume, above_tip)
                 share = take / wet.volume
                 drawn = {k: v * share for k, v in wet.contents.items()}
                 for k, v in drawn.items():
